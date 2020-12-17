@@ -1,0 +1,53 @@
+@startuml
+KafkaProducer -> KafkaProducer: send
+KafkaProducer -> KafkaProducer: doSend
+KafkaProducer -> KafkaProducer: waitOnMetadata
+KafkaProducer -> RecordAccumulator: append
+KafkaProducer -> Sender: wakeup
+note left: 如果追加完数据后对应的RecordBatch已经达到了batch.size则唤醒sender线程发送数据
+
+newpage
+
+Sender -> Sender: run
+note left: while (running){\n    run(time.milliseconds());\n}
+Sender -> NetworkClient: ①send
+
+NetworkClient -> NetworkClient: doSend
+note left:将request存入NetworkClient#inFlightRequests队列\n其表示已发送但还未收到返回的请求，从队头入队
+
+
+NetworkClient -> Selector: send
+Selector -> KafkaChannel: send
+note left:channel.setSend(send)
+KafkaChannel -> KafkaChannel: setSend
+note left: 给send属性赋值，并且在selector上注册channel的写事件
+
+Sender -> NetworkClient: ②poll
+
+
+NetworkClient -> Selector: ①poll
+note left:poll{\n   select(timeout);\n  pollSelectionKeys();\n  addToCompletedReceives();\n}
+Selector -> Selector : ①select
+Selector -> Selector: ②pollSelectionKeys
+Selector -> KafkaChannel: read
+note left:while((networkReceive = channel.read()) != null){\n   addToStagedReceives(channel, networkReceive);\n}
+Selector -> Selector: addToStagedReceives
+note left: 将networkReceive存入Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives
+
+Selector -> KafkaChannel: write
+note left #lightcyan: send.writeTo(transportLayer)，send发送后存入List<Send> completedSends
+
+
+Selector -> Selector: ③addToCompletedReceives
+note left #lightcyan:将stagedReceives队列头结点取出放入List<NetworkReceive> completedReceives
+
+NetworkClient -> NetworkClient: ②handleCompletedSends
+note left: 如果selector#completedSends队列中最新请求的request不需要返回，则将其从NetworkClient#inFlightRequests移除
+
+NetworkClient -> NetworkClient: ③handleCompletedReceives
+note left #aqua: 遍历selector#completedReceives队列，取出NetworkClient#inFlightRequests最尾部的请求，\n根据其apiKey解析出selector#completedReceives队列中networkRreceive中的有效信息，\n将返回信息更新到NetworkClient#metadata对象中\n注意：单个channel下的各种队列都是有线性关系的，\n如inFlightRequests中最早发出的请求，也会优先得到返回并存入completedReceive队列
+
+
+
+@enduml
+
